@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "FineGOAP",
+	"Description": "This is a Plugin for GOAP AI system, all rights reserved",
+	"Category": "Other",
+	"CreatedBy": "WuGuanyu",
+	"CreatedByURL": "www.wuguanyu.fun",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "FineGOAP",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
