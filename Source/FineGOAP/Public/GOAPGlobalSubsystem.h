@@ -14,16 +14,15 @@ class FINEGOAP_API UGOAPGlobalSubsystem : public UWorldSubsystem
 
 public:
 	// 增加或减少全局状态的值 (用于占位/释放令牌)
-	// Delta 填 1 表示占用，填 -1 表示释放
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Global State")
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Global State", meta = (ToolTip = "Modify a global state. Delta = 1 means claim a token, Delta = -1 means release it."))
 	void ModifyGlobalState(FName Key, int32 Delta);
 
 	// 获取当前全局状态的值
-	UFUNCTION(BlueprintPure, Category = "GOAP|Global State")
+	UFUNCTION(BlueprintPure, Category = "GOAP|Global State", meta = (ToolTip = "Get the current integer value of a specific global state."))
 	int32 GetGlobalState(FName Key) const;
 
 	// 直接覆盖设置全局状态的值
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Global State")
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Global State", meta = (ToolTip = "Directly overwrite the value of a global state."))
 	void SetGlobalState(FName Key, int32 Value);
 
 	// ==========================================
@@ -31,10 +30,8 @@ public:
 	// ==========================================
 	/*
 	 * 在屏幕上打印当前的 Global State 状态
-	 * @param bEnable - 是否开启打印
-	 * @param SpecificKey - 如果填入具体的名称(例如"MeleeAttacking")，则只打印这一项；如果保留为 "None"，则打印所有项
 	 */
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug")
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug", meta = (ToolTip = "Print current global states on screen. Pass a SpecificKey to monitor only one state, or leave it 'None' to monitor all."))
 	void DebugPrintGlobalStates(bool bEnable = true, FName SpecificKey = NAME_None);
 
 private:

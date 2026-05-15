@@ -9,7 +9,7 @@ struct FGOAPState
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP", meta = (ToolTip = "Dictionary of states. Add state keys (e.g., 'HasWeapon') and their integer values here."))
 	TMap<FName, int32> States;
 
 	void SetState(FName Key, int32 Value)

@@ -5,16 +5,11 @@
 #include "Kismet/GameplayStatics.h" 
 #include "GameFramework/Character.h"
 #include "UObject/UObjectIterator.h"
+#include "Algo/Reverse.h" // [性能优化] 引入算法库支持 O(N) 翻转
 
-// ==========================================
-// 静态 Debug 变量初始化
-// ==========================================
 bool UGOAPComponent::bGlobalDebugEnabled = false;
 TWeakObjectPtr<UGOAPComponent> UGOAPComponent::CurrentDebugTarget = nullptr;
 
-// ==========================================
-// 🧠 GOAP A* 算法专用的节点数据结构
-// ==========================================
 struct FGOAPNode
 {
 	FGOAPState State;
@@ -26,9 +21,6 @@ struct FGOAPNode
 	FGOAPNode() : Action(nullptr), Parent(nullptr), Cost(0.f), Depth(0) {}
 };
 
-// ==========================================
-// 组件基础配置
-// ==========================================
 UGOAPComponent::UGOAPComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
@@ -40,7 +32,6 @@ void UGOAPComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// 如果刚开始没有 Debug 目标，默认把自己设为目标
 	if (!CurrentDebugTarget.IsValid())
 	{
 		CurrentDebugTarget = this;
@@ -49,7 +40,17 @@ void UGOAPComponent::BeginPlay()
 
 void UGOAPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	// 清理静态调试指针，防止卸载关卡时出现野指针崩溃
+	// ======================================================================
+	// 🔴【核心死锁修复】强制回收机制
+	// 当NPC意外死亡被Destroy时，强行调用当前Action的 OnActionEnd。
+	// 这保证了策划在蓝图中写的 GlobalState -1 (释放令牌) 逻辑绝对会被执行，避免全局死锁。
+	// ======================================================================
+	if (CurrentAction != nullptr)
+	{
+		CurrentAction->OnActionEnd(this);
+		CurrentAction = nullptr;
+	}
+
 	if (CurrentDebugTarget.Get() == this)
 	{
 		CurrentDebugTarget = nullptr;
@@ -57,9 +58,6 @@ void UGOAPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
-// ==========================================
-// 🛠️ 辅助函数 Helper Functions (支持双向兼容挂载)
-// ==========================================
 APawn* UGOAPComponent::GetAIPawn()
 {
 	if (APawn* OwnerPawn = Cast<APawn>(GetOwner())) return OwnerPawn;
@@ -79,9 +77,6 @@ ACharacter* UGOAPComponent::GetPlayer()
 	return UGameplayStatics::GetPlayerCharacter(this, 0);
 }
 
-// ==========================================
-// 🌍 状态管理
-// ==========================================
 void UGOAPComponent::SetWorldState(FName Key, int32 Value)
 {
 	CurrentWorldState.SetState(Key, Value);
@@ -92,18 +87,15 @@ int32 UGOAPComponent::GetWorldState(FName Key)
 	return CurrentWorldState.GetState(Key, 0);
 }
 
-// ==========================================
-// 🎯 核心大脑：正向 A* 规划器 (防死循环版)
-// ==========================================
 bool UGOAPComponent::BuildPlan()
 {
-	CurrentPlan.Empty();
+	// [性能优化] 使用 Reset() 替代 Empty()，保留底层内存容量，避免高频规划时的 GC 与内存碎片分配开销
+	CurrentPlan.Reset();
 	CurrentGoal = nullptr;
 
 	UGOAPGoal* BestGoal = nullptr;
 	float MaxPriority = -1.f;
 
-	// --- [Debug 追踪 1]：检查目标数组 ---
 	if (bGlobalDebugEnabled && GEngine) {
 		GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Yellow, FString::Printf(TEXT("🔍 [GOAP 追踪]: 正在评估 %d 个 Goals..."), AvailableGoals.Num()));
 	}
@@ -120,7 +112,8 @@ bool UGOAPComponent::BuildPlan()
 		if (!Goal->IsGoalAchieved(this))
 		{
 			bool bAlreadyMet = true;
-			for (const auto& DesiredState : Goal->DesiredState)
+			// [规范优化] TPair 代替 auto，消除隐式转换的性能损耗
+			for (const TPair<FName, int32>& DesiredState : Goal->DesiredState)
 			{
 				if (CurrentWorldState.GetState(DesiredState.Key) != DesiredState.Value)
 				{
@@ -158,7 +151,6 @@ bool UGOAPComponent::BuildPlan()
 
 	CurrentGoal = BestGoal;
 
-	// --- [Debug 追踪 2]：A* 寻路追踪 ---
 	if (bGlobalDebugEnabled && GEngine) {
 		GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Green, FString::Printf(TEXT("✅ 选中最佳 Goal: %s | 开始规划路径! (动作池有 %d 个)"), *BestGoal->GetName(), BestGoal->GoalActions.Num()));
 	}
@@ -191,7 +183,7 @@ bool UGOAPComponent::BuildPlan()
 		OpenList.RemoveAt(BestNodeIndex);
 
 		bool bGoalMet = true;
-		for (const auto& DesiredState : BestGoal->DesiredState)
+		for (const TPair<FName, int32>& DesiredState : BestGoal->DesiredState)
 		{
 			if (CurrentNode->State.GetState(DesiredState.Key) != DesiredState.Value)
 			{
@@ -218,7 +210,7 @@ bool UGOAPComponent::BuildPlan()
 			if (Action->bDisable) continue;
 
 			bool bPreconditionsMet = true;
-			for (const auto& Precond : Action->Preconditions)
+			for (const TPair<FName, int32>& Precond : Action->Preconditions)
 			{
 				if (CurrentNode->State.GetState(Precond.Key) != Precond.Value)
 				{
@@ -249,7 +241,7 @@ bool UGOAPComponent::BuildPlan()
 					NewNode->Cost = CurrentNode->Cost + Action->CalculateCost(this);
 					NewNode->State = CurrentNode->State;
 
-					for (const auto& Effect : Action->Effects)
+					for (const TPair<FName, int32>& Effect : Action->Effects)
 					{
 						NewNode->State.SetState(Effect.Key, Effect.Value);
 					}
@@ -264,14 +256,18 @@ bool UGOAPComponent::BuildPlan()
 	{
 		TSharedPtr<FGOAPNode> TraceNode = GoalNode;
 
+		// [性能优化] 废弃极为耗时的 O(N²) Insert(0) 做法
+		// 改为顺序 Add (O(1)) ，并在循环结束后翻转数组 (O(N))，在大规模规划时性能显著提升
 		while (TraceNode != nullptr && TraceNode->Action != nullptr)
 		{
-			CurrentPlan.Insert(TraceNode->Action, 0);
+			CurrentPlan.Add(TraceNode->Action);
 			TraceNode = TraceNode->Parent;
 		}
 
 		if (CurrentPlan.Num() > 0)
 		{
+			Algo::Reverse(CurrentPlan);
+
 			if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Green, TEXT("🎉 [GOAP 追踪]: 寻路成功！找到了有效计划！"));
 			return true;
 		}
@@ -282,9 +278,6 @@ bool UGOAPComponent::BuildPlan()
 	return false;
 }
 
-// ==========================================
-// ⚙️ 组件心跳：管理动作的生老病死
-// ==========================================
 void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -302,7 +295,7 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 		if (CurrentAction != nullptr)
 		{
 			bool bPreconditionsMet = true;
-			for (const auto& Precond : CurrentAction->Preconditions)
+			for (const TPair<FName, int32>& Precond : CurrentAction->Preconditions)
 			{
 				if (CurrentWorldState.GetState(Precond.Key) != Precond.Value)
 				{
@@ -328,6 +321,7 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 
 	if (CurrentAction != nullptr)
 	{
+		// 处理动作打断 (Interrupt) 检查
 		if (CurrentAction->InterruptCost >= 0.0f && CurrentGoal != nullptr)
 		{
 			for (UGOAPAction* CheckAction : CurrentGoal->GoalActions)
@@ -335,7 +329,7 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 				if (CheckAction && CheckAction != CurrentAction && !CheckAction->bDisable)
 				{
 					bool bPreconditionsMet = true;
-					for (const auto& Precond : CheckAction->Preconditions)
+					for (const TPair<FName, int32>& Precond : CheckAction->Preconditions)
 					{
 						if (CurrentWorldState.GetState(Precond.Key) != Precond.Value)
 						{
@@ -355,7 +349,7 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 									*GetOwner()->GetName(), *CheckAction->GetName(), *CurrentAction->GetName()));
 							}
 							AbortCurrentPlan();
-							break;
+							break; // 触发打断，跳出循环
 						}
 					}
 				}
@@ -371,7 +365,7 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 			CurrentAction->StartCooldown(this);
 			CurrentAction->OnActionEnd(this);
 
-			for (const auto& Effect : CurrentAction->Effects)
+			for (const TPair<FName, int32>& Effect : CurrentAction->Effects)
 			{
 				SetWorldState(Effect.Key, Effect.Value);
 			}
@@ -379,13 +373,11 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 		}
 	}
 
-	// 🎨 Debug UI (状态面板) - 已修复固定Key使其常驻不刷屏
+	// 打印当前调试目标状态
 	if (bGlobalDebugEnabled && CurrentDebugTarget.Get() == this && GEngine)
 	{
 		FString OwnerName = GetOwner() ? GetOwner()->GetName() : TEXT("Unknown AI");
 		FString GoalStr = CurrentGoal ? CurrentGoal->GetClass()->GetName() : TEXT("None");
-
-		// 【修复点 2】：把 TEXT("Idle") 改为更明确的提示，如果它为 None，说明没找到计划或正在等待条件满足
 		FString ActionStr = CurrentAction ? CurrentAction->ActionName.ToString() : TEXT("None(Plan Failed/Waiting)");
 
 		GoalStr = GoalStr.Replace(TEXT("_C"), TEXT(""));
@@ -393,7 +385,6 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 		FString DebugStr = FString::Printf(TEXT("🤖 [GOAP Target]: %s\n🎯 [Current Goal]: %s\n🎬 [Current Action]: %s"),
 			*OwnerName, *GoalStr, *ActionStr);
 
-		// Key 使用 Component 的 UniqueID，防止不同 AI 互相覆盖
 		GEngine->AddOnScreenDebugMessage((uint64)GetUniqueID(), 0.0f, FColor::Cyan, DebugStr, true, FVector2D(1.5f, 1.5f));
 	}
 }
@@ -403,20 +394,15 @@ void UGOAPComponent::AbortCurrentPlan()
 	if (CurrentAction)
 	{
 		CurrentAction->StartCooldown(this);
-		CurrentAction->OnActionEnd(this);
+		CurrentAction->OnActionEnd(this); // 确保被打断时令牌能安全释放
 		CurrentAction = nullptr;
 	}
-	CurrentPlan.Empty();
+	CurrentPlan.Reset();
 	CurrentGoal = nullptr;
 }
 
-// ==========================================
-// 🐛 调试函数实现 (已完全修复刷屏 & 双重触发Bug)
-// ==========================================
 void UGOAPComponent::ToggleGOAPDebug(const UObject* WorldContextObject)
 {
-	// 【修复Bug 1】：加入“帧计数器”锁。
-	// 防止如果遍历了多个AI组件，或者按键事件一帧内触发了多次（如Pressed和Released连击），导致状态反复翻转抵消。
 	static uint64 LastToggleFrame = 0;
 	if (GFrameCounter == LastToggleFrame) return;
 	LastToggleFrame = GFrameCounter;
@@ -425,7 +411,6 @@ void UGOAPComponent::ToggleGOAPDebug(const UObject* WorldContextObject)
 	if (GEngine)
 	{
 		FString Msg = bGlobalDebugEnabled ? TEXT("GOAP Debug: ON") : TEXT("GOAP Debug: OFF");
-		// 使用固定 Key = 8888 强制在屏幕同一行刷新
 		GEngine->AddOnScreenDebugMessage(8888, 3.0f, bGlobalDebugEnabled ? FColor::Green : FColor::Red, Msg);
 	}
 }
@@ -472,14 +457,12 @@ void UGOAPComponent::DebugPrintWorldState(bool bPrintToScreen, FName KeyToPrint)
 	if (KeyToPrint.IsNone())
 	{
 		int32 PrintIndex = 0;
-		for (const auto& StatePair : CurrentWorldState.States)
+		for (const TPair<FName, int32>& StatePair : CurrentWorldState.States)
 		{
 			FString Msg = FString::Printf(TEXT("[%s]: %d"), *StatePair.Key.ToString(), StatePair.Value);
 
 			if (bPrintToScreen && GEngine)
 			{
-				// 【修复Bug 2】：给每一个 State 分配一个唯一的固定 Key (ComponentID + 序号偏移)。
-				// 时间设置为 0.0f 或 2.0f。如果有相同 Key，它会在原地刷新这一行，彻底解决刷屏问题。
 				uint64 MsgKey = (uint64)GetUniqueID() + 1000 + PrintIndex;
 				GEngine->AddOnScreenDebugMessage(MsgKey, 2.0f, FColor::Cyan, Msg);
 			}

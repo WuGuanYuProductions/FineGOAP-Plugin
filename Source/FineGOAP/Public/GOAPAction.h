@@ -8,7 +8,7 @@
 
 class UGOAPComponent;
 
-// 🟢 新增：策划专用的冷却配置选项
+// 🟢 策划专用的冷却配置选项
 UENUM(BlueprintType)
 enum class EGOAPCooldownType : uint8
 {
@@ -24,94 +24,86 @@ class FINEGOAP_API UGOAPAction : public UObject
 public:
 	UGOAPAction();
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action", meta = (ToolTip = "The unique string/name identifying this action."))
 	FName ActionName;
 
 	// 基础 Cost
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action", meta = (ToolTip = "Base execution cost of this action. Lower cost actions are preferred by the pathfinder."))
 	float BaseCost;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action", meta = (ToolTip = "Required world states for this action to be executed."))
 	TMap<FName, int32> Preconditions;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action", meta = (ToolTip = "World states that will be modified after this action successfully completes."))
 	TMap<FName, int32> Effects;
 
 	// ==========================================
 	// 💰 消耗与动态修饰器
 	// ==========================================
-	// 动态 Cost 修饰器数组（策划可以在面板里直接添加和编辑）
-	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP|Cost")
+	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP|Cost", meta = (ToolTip = "Dynamic cost modifiers to dynamically alter the action's cost based on real-time conditions (e.g., HP, Distance)."))
 	TArray<UGOAPModifier*> CostModifiers;
 
 	// ==========================================
 	// ⚡ 打断机制
 	// ==========================================
-	// 打断阈值：如果当前正在执行本动作，且有其他合法动作的“动态 Cost”低于这个阈值，则本动作会被打断。
 	// 设为 -1 表示不允许通过 Cost 机制被打断。
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP|Interrupt")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP|Interrupt", meta = (ToolTip = "Threshold cost for interruption. If another valid action's dynamic cost is lower than this value, this action will be aborted. Set to -1 to disable interruption."))
 	float InterruptCost = -1.0f;
 
 	// ------------------------------------------
 	// 核心逻辑函数
 	// ------------------------------------------
 
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action")
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action", meta = (ToolTip = "Calculate the final dynamic cost of this action."))
 	float CalculateCost(UGOAPComponent* Agent);
 
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action")
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action", meta = (ToolTip = "Procedural validation for conditions that cannot be easily represented by integer world states."))
 	bool CheckProceduralPrecondition(UGOAPComponent* Agent);
 
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action")
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action", meta = (ToolTip = "Called once when the action begins execution."))
 	void OnActionStart(UGOAPComponent* Agent);
 
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action")
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action", meta = (ToolTip = "Called every frame while the action is running. Return true to indicate the action is finished."))
 	bool OnActionTick(UGOAPComponent* Agent, float DeltaTime);
 
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action")
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Action", meta = (ToolTip = "Called once when the action is finished or aborted."))
 	void OnActionEnd(UGOAPComponent* Agent);
 
 	virtual UWorld* GetWorld() const override;
 
-	UFUNCTION(BlueprintPure, Category = "GOAP|Global State")
+	UFUNCTION(BlueprintPure, Category = "GOAP|Global State", meta = (ToolTip = "Convenience function to fetch the Global GOAP Subsystem."))
 	class UGOAPGlobalSubsystem* GetGlobalGOAPSubsystem() const;
 
 	// ==========================================
 	// ⏳ 冷却机制 (Cooldown)
 	// ==========================================
 
-	// 选择冷却时间的配置方式
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP|Cooldown")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP|Cooldown", meta = (ToolTip = "Choose how the cooldown duration is determined: fixed value or calculated via a modifier."))
 	EGOAPCooldownType CooldownType = EGOAPCooldownType::DirectValue;
 
-	// 方式A：直接填值（仅当选择了 DirectValue 时显示）
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP|Cooldown", meta = (EditCondition = "CooldownType == EGOAPCooldownType::DirectValue", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP|Cooldown", meta = (EditCondition = "CooldownType == EGOAPCooldownType::DirectValue", EditConditionHides, ToolTip = "Fixed cooldown duration in seconds."))
 	float Cooldown = 0.0f;
 
-	// 方式B：使用修饰器动态计算（仅当选择了 ModifierValue 时显示，Instanced 允许直接在面板内实例化编辑）
-	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP|Cooldown", meta = (EditCondition = "CooldownType == EGOAPCooldownType::ModifierValue", EditConditionHides))
+	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP|Cooldown", meta = (EditCondition = "CooldownType == EGOAPCooldownType::ModifierValue", EditConditionHides, ToolTip = "Modifier used to dynamically calculate cooldown duration."))
 	UGOAPModifier* CooldownModifier;
 
 	// --- 内部状态缓存 ---
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "GOAP|Cooldown State")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "GOAP|Cooldown State", meta = (ToolTip = "The exact time this action was last executed."))
 	float LastExecutionTime = -10000.0f;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "GOAP|Cooldown State")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "GOAP|Cooldown State", meta = (ToolTip = "The active cooldown duration applied to the current execution."))
 	float CurrentCooldownDuration = 0.0f;
 
-	// 检查动作是否在冷却中
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Cooldown")
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Cooldown", meta = (ToolTip = "Check if this action is currently on cooldown."))
 	bool IsOnCooldown() const;
 
-	// 开始计算冷却（由 GOAPComponent 在动作结束或开始时调用，需要 Agent 参与修饰器计算）
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Cooldown")
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Cooldown", meta = (ToolTip = "Trigger the cooldown calculation and start the timer."))
 	void StartCooldown(UGOAPComponent* Agent);
 
-	// 综合检查：是否满足冷却条件 且 满足前提条件
-	UFUNCTION(BlueprintCallable, Category = "GOAP Action")
+	UFUNCTION(BlueprintCallable, Category = "GOAP Action", meta = (ToolTip = "Comprehensive check returning whether this action is available (combines Cooldown and Procedural Preconditions)."))
 	bool IsActionAvailable(UGOAPComponent* Agent);
 
-	// 🔴 新增：策划专用的禁用开关
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action")
+	// 🔴 策划专用的禁用开关
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Action", meta = (ToolTip = "If true, this action will be completely ignored by the GOAP solver."))
 	bool bDisable = false;
 };

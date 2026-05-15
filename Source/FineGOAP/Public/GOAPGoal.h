@@ -15,27 +15,26 @@ class FINEGOAP_API UGOAPGoal : public UObject
 public:
 	UGOAPGoal();
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal", meta = (ToolTip = "The unique identifier name for this goal."))
 	FName GoalName;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal", meta = (ToolTip = "Base priority of this goal. Higher value means higher priority to be executed."))
 	float BasePriority;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal", meta = (ToolTip = "The target world states required to consider this goal successfully achieved."))
 	TMap<FName, int32> DesiredState;
 
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Goal")
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Goal", meta = (ToolTip = "Override this in Blueprint to dynamically calculate the priority of this goal based on current conditions."))
 	float CalculatePriority(UGOAPComponent* Agent);
 
-	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Goal")
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "GOAP Goal", meta = (ToolTip = "Override this to define custom logic for whether the goal is achieved. By default, it checks the DesiredState."))
 	bool IsGoalAchieved(UGOAPComponent* Agent);
 
-	// 🔴 新增：策划专用的禁用开关
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal")
+	// 🔴 策划专用的禁用开关
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GOAP Goal", meta = (ToolTip = "If true, this goal will be completely ignored by the GOAP solver."))
 	bool bDisable = false;
 
-	// 🔴 新增：层级化结构，专属当前 Goal 的动作库！
-	// (Instanced 允许策划直接在 Goal 的下拉菜单里点加号创建 Action 实例)
-	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP Goal")
+	// 🔴 层级化结构，专属当前 Goal 的动作库！
+	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP Goal", meta = (ToolTip = "Exclusive actions available only when attempting to achieve this specific goal. Click '+' to add action instances."))
 	TArray<class UGOAPAction*> GoalActions;
 };

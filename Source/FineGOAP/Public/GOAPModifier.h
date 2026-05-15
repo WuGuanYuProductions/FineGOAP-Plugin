@@ -8,7 +8,6 @@ class UGOAPComponent;
 
 /**
  * GOAP 动作消耗修饰器
- * 策划可以创建此类的蓝图子类，在里面根据玩家距离、血量等动态计算一个值，影响 Action 的最终 Cost 或 Cooldown
  */
 UCLASS(Blueprintable, Abstract, EditInlineNew, DefaultToInstanced)
 class FINEGOAP_API UGOAPModifier : public UObject
@@ -17,26 +16,22 @@ class FINEGOAP_API UGOAPModifier : public UObject
 
 public:
 	/*
-	 * 核心计算函数：策划在蓝图中重写这个函数。
-	 * 返回的值将与 Action 的 BaseCost 相加，或者作为 Cooldown 使用。
+	 * 核心计算函数
 	 */
-	UFUNCTION(BlueprintNativeEvent, Category = "GOAP|Modifier")
+	UFUNCTION(BlueprintNativeEvent, Category = "GOAP|Modifier", meta = (ToolTip = "Override this in Blueprint to dynamically calculate a value (e.g., based on distance or HP). This will affect the Action's Cost or Cooldown."))
 	float CalculateModifier(UGOAPComponent* OwnerComp) const;
 
 	// =========================================
 	// 👁️ 编辑器实时预览机制
 	// =========================================
 
-	// 策划在面板里修改参数时，这里会实时显示最终的计算结果
-	UPROPERTY(VisibleAnywhere, Transient, Category = "GOAP|Preview")
+	UPROPERTY(VisibleAnywhere, Transient, Category = "GOAP|Preview", meta = (ToolTip = "Real-time preview of the calculated modifier value based on your current Blueprint settings."))
 	float EditorPreviewValue;
 
-	// 提供给蓝图的预览专用计算函数（因为在编辑器态是没有 Agent 实例的）
-	UFUNCTION(BlueprintNativeEvent, Category = "GOAP|Preview")
+	UFUNCTION(BlueprintNativeEvent, Category = "GOAP|Preview", meta = (ToolTip = "Provide a mock calculation logic here so designers can preview the result in the editor without running the game."))
 	float CalculateEditorPreviewValue() const;
 
 #if WITH_EDITOR
-	// 当策划在细节面板修改任意数值时，自动触发此函数
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 };

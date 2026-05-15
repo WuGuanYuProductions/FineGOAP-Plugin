@@ -1,4 +1,5 @@
 ﻿#include "GOAPModifier.h"
+#include "GOAPComponent.h" // 假定你工程中存在此文件
 
 float UGOAPModifier::CalculateModifier_Implementation(UGOAPComponent* OwnerComp) const
 {
@@ -7,7 +8,6 @@ float UGOAPModifier::CalculateModifier_Implementation(UGOAPComponent* OwnerComp)
 
 float UGOAPModifier::CalculateEditorPreviewValue_Implementation() const
 {
-	// 默认返回0，建议策划在蓝图子类中重写这个函数返回假定值用于预览
 	return 0.0f;
 }
 
@@ -16,7 +16,10 @@ void UGOAPModifier::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	// 只要策划在面板修改了任何数值，就重新计算并刷新预览值！
-	EditorPreviewValue = CalculateEditorPreviewValue();
+	// [Bug修复/安全优化] 确保 Property 不为空。在 EditInlineNew 嵌套对象结构变动时，避免触发空指针导致的引擎崩溃
+	if (PropertyChangedEvent.Property != nullptr)
+	{
+		EditorPreviewValue = CalculateEditorPreviewValue();
+	}
 }
 #endif
