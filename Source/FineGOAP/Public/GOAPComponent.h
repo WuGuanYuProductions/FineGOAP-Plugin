@@ -1,4 +1,6 @@
-﻿#pragma once
+﻿// Copyright WuGuanyu Productions, All Rights Reserved.
+
+#pragma once
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
@@ -20,7 +22,6 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
-	// 🔴 核心Bug修复点：接管生命周期终点，防止动作意外中断导致的令牌死锁
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 public:
@@ -29,53 +30,47 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = "GOAP State", meta = (ToolTip = "Current specific world states known by this agent."))
 	FGOAPState CurrentWorldState;
 
-	// =========================================
-	// 🔴 状态缓存
-	// =========================================
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "GOAP|State", meta = (ToolTip = "The current active goal the agent is trying to achieve."))
-	class UGOAPGoal* CurrentGoal = nullptr;
+	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP Setup", meta = (ToolTip = "Global pool of actions this agent can perform. The planner will emergent-ly chain them together."))
+	TArray<UGOAPAction*> AvailableActions;
 
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "GOAP Setup", meta = (ToolTip = "Pool of goals this agent will evaluate and try to achieve. Click '+' to add goals."))
 	TArray<UGOAPGoal*> AvailableGoals;
 
-	// =========================================
-	// 🐛 调试系统
-	// =========================================
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug", meta = (WorldContext = "WorldContextObject", ToolTip = "Toggle on-screen debug printing for GOAP processes globally."))
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "GOAP|State", meta = (ToolTip = "The current active goal the agent is trying to achieve."))
+	class UGOAPGoal* CurrentGoal = nullptr;
+
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug", meta = (WorldContext = "WorldContextObject"))
 	static void ToggleGOAPDebug(const UObject* WorldContextObject);
 
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug", meta = (WorldContext = "WorldContextObject", ToolTip = "Cycle through available GOAP agents in the world for debugging."))
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug", meta = (WorldContext = "WorldContextObject"))
 	static void SwitchGOAPDebugTarget(const UObject* WorldContextObject);
 
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug", meta = (ToolTip = "Print local world states to screen for this specific agent. Pass 'None' to print all states."))
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Debug")
 	void DebugPrintWorldState(bool bEnable = true, FName SpecificKey = NAME_None);
 
-	// =========================================
-	// 🧠 核心逻辑方法
-	// =========================================
-	UFUNCTION(BlueprintCallable, Category = "GOAP State", meta = (ToolTip = "Set or update an integer world state for this agent."))
+	UFUNCTION(BlueprintCallable, Category = "GOAP State")
 	void SetWorldState(FName Key, int32 Value);
 
-	UFUNCTION(BlueprintCallable, Category = "GOAP State", meta = (ToolTip = "Retrieve the value of a specific world state. Returns 0 if not found."))
+	UFUNCTION(BlueprintCallable, Category = "GOAP State")
 	int32 GetWorldState(FName Key);
 
-	UFUNCTION(BlueprintCallable, Category = "GOAP Planner", meta = (ToolTip = "Trigger the A* Pathfinding algorithm to build a new sequence of actions based on goals."))
+	UFUNCTION(BlueprintCallable, Category = "GOAP Planner")
 	bool BuildPlan();
 
-	UFUNCTION(BlueprintCallable, Category = "GOAP|Core", meta = (ToolTip = "Force cancel the currently executing action and clear the queued plan. This safely triggers OnActionEnd."))
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Core")
 	void AbortCurrentPlan();
 
-	// =========================================
-	// 🛠️ 辅助获取器
-	// =========================================
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "GOAP Helper", meta = (ToolTip = "Get the Pawn owning this GOAP component."))
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "GOAP Helper")
 	APawn* GetAIPawn();
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "GOAP Helper", meta = (ToolTip = "Get the AI Controller managing this Pawn."))
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "GOAP Helper")
 	AAIController* GetAIController();
 
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "GOAP Helper", meta = (ToolTip = "Get the player character at index 0."))
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "GOAP Helper")
 	ACharacter* GetPlayer();
+
+	UFUNCTION(BlueprintCallable, Category = "GOAP|Interrupt")
+	void CheckForInterruption();
 
 private:
 	UPROPERTY()

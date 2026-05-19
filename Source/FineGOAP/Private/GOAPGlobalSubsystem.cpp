@@ -1,4 +1,20 @@
-﻿#include "GOAPGlobalSubsystem.h"
+﻿// Copyright WuGuanyu Productions, All Rights Reserved.
+
+#include "GOAPGlobalSubsystem.h"
+#include "Engine/Engine.h" 
+
+UGOAPGlobalSubsystem* UGOAPGlobalSubsystem::GetGOAPGlobalSubsystem(const UObject* WorldContextObject)
+{
+	if (!WorldContextObject) return nullptr;
+
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
+	if (World)
+	{
+		return World->GetSubsystem<UGOAPGlobalSubsystem>();
+	}
+
+	return nullptr;
+}
 
 void UGOAPGlobalSubsystem::ModifyGlobalState(FName Key, int32 Delta)
 {
@@ -30,7 +46,6 @@ void UGOAPGlobalSubsystem::DebugPrintGlobalStates(bool bEnable, FName SpecificKe
 	{
 		if (const int32* Val = GlobalStates.Find(SpecificKey))
 		{
-			// [性能优化] 使用 Appendf 替代 += FString::Printf，避免产生大量临时FString对象导致的内存开销
 			DebugMsg.Appendf(TEXT("%s : %d\n"), *SpecificKey.ToString(), *Val);
 		}
 		else

@@ -1,5 +1,9 @@
+ï»¿// Copyright WuGuanyu Productions, All Rights Reserved.
+
 #include "GOAPGoal.h"
-#include "GOAPComponent.h" // ¼Ù¶¨Äã¹¤³ÌÖĞ´æÔÚ´ËÎÄ¼ş
+#include "GOAPComponent.h" 
+#include "GOAPGlobalSubsystem.h" 
+#include "Engine/World.h"       
 
 UGOAPGoal::UGOAPGoal()
 {
@@ -15,13 +19,29 @@ bool UGOAPGoal::IsGoalAchieved_Implementation(UGOAPComponent* Agent)
 {
 	if (!Agent) return false;
 
-	// [¹æ·¶ÓÅ»¯] Ê¹ÓÃ TPair Ã÷È·ÀàĞÍ£¬·ûºÏUE×î¼ÑÊµ¼ù£¬±ÜÃâ auto Ç±ÔÚµÄµü´úÆ÷ÍÆµ¼ĞÔÄÜËğºÄ
-	for (const TPair<FName, int32>& State : DesiredState)
+	for (const FGOAPCondition& Condition : GoalConditions)
 	{
-		if (Agent->GetWorldState(State.Key) != State.Value)
+		int32 CurrentStateValue = Agent->GetWorldState(Condition.Key);
+		if (!Condition.Evaluate(CurrentStateValue))
 		{
 			return false;
 		}
 	}
 	return true;
+}
+
+
+UWorld* UGOAPGoal::GetWorld() const
+{
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return nullptr;
+	}
+
+	if (UObject* Outer = GetOuter())
+	{
+		return Outer->GetWorld();
+	}
+
+	return nullptr;
 }

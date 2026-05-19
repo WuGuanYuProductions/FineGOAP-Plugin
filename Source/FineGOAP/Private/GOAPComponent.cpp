@@ -1,11 +1,14 @@
-﻿#include "GOAPComponent.h"
+﻿// Copyright WuGuanyu Productions, All Rights Reserved.
+
+#include "GOAPComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "AIController.h"
 #include "Kismet/GameplayStatics.h" 
 #include "GameFramework/Character.h"
 #include "UObject/UObjectIterator.h"
-#include "Algo/Reverse.h" // [性能优化] 引入算法库支持 O(N) 翻转
+#include "Algo/Reverse.h" 
 
 bool UGOAPComponent::bGlobalDebugEnabled = false;
 TWeakObjectPtr<UGOAPComponent> UGOAPComponent::CurrentDebugTarget = nullptr;
@@ -15,11 +18,37 @@ struct FGOAPNode
 	FGOAPState State;
 	UGOAPAction* Action;
 	TSharedPtr<FGOAPNode> Parent;
-	float Cost;
+	float G;
+	float H;
 	int32 Depth;
 
-	FGOAPNode() : Action(nullptr), Parent(nullptr), Cost(0.f), Depth(0) {}
+	FGOAPNode() : Action(nullptr), Parent(nullptr), G(0.f), H(0.f), Depth(0) {}
+	float F() const { return G + H; }
 };
+
+static bool AreStatesEqual(const FGOAPState& A, const FGOAPState& B)
+{
+	if (A.States.Num() != B.States.Num()) return false;
+	for (const TPair<FName, int32>& Pair : A.States)
+	{
+		const int32* BVal = B.States.Find(Pair.Key);
+		if (!BVal || *BVal != Pair.Value) return false;
+	}
+	return true;
+}
+
+static float CalculateHeuristic(const FGOAPState& CurrentState, const TArray<FGOAPCondition>& GoalConditions)
+{
+	float H = 0.0f;
+	for (const FGOAPCondition& Cond : GoalConditions)
+	{
+		if (!Cond.Evaluate(CurrentState.GetState(Cond.Key)))
+		{
+			H += 1.0f;
+		}
+	}
+	return H;
+}
 
 UGOAPComponent::UGOAPComponent()
 {
@@ -31,7 +60,6 @@ UGOAPComponent::UGOAPComponent()
 void UGOAPComponent::BeginPlay()
 {
 	Super::BeginPlay();
-
 	if (!CurrentDebugTarget.IsValid())
 	{
 		CurrentDebugTarget = this;
@@ -40,140 +68,121 @@ void UGOAPComponent::BeginPlay()
 
 void UGOAPComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	// ======================================================================
-	// 🔴【核心死锁修复】强制回收机制
-	// 当NPC意外死亡被Destroy时，强行调用当前Action的 OnActionEnd。
-	// 这保证了策划在蓝图中写的 GlobalState -1 (释放令牌) 逻辑绝对会被执行，避免全局死锁。
-	// ======================================================================
 	if (CurrentAction != nullptr)
 	{
 		CurrentAction->OnActionEnd(this);
 		CurrentAction = nullptr;
 	}
-
-	if (CurrentDebugTarget.Get() == this)
-	{
-		CurrentDebugTarget = nullptr;
-	}
+	if (CurrentDebugTarget.Get() == this) { CurrentDebugTarget = nullptr; }
 	Super::EndPlay(EndPlayReason);
 }
 
 APawn* UGOAPComponent::GetAIPawn()
 {
-	if (APawn* OwnerPawn = Cast<APawn>(GetOwner())) return OwnerPawn;
-	if (AAIController* OwnerController = Cast<AAIController>(GetOwner())) return OwnerController->GetPawn();
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor) return nullptr;
+
+	if (APawn* OwnerAsPawn = Cast<APawn>(OwnerActor))
+	{
+		return OwnerAsPawn;
+	}
+
+	if (AAIController* OwnerAsController = Cast<AAIController>(OwnerActor))
+	{
+		return OwnerAsController->GetPawn();
+	}
+
 	return nullptr;
 }
 
 AAIController* UGOAPComponent::GetAIController()
 {
-	if (AAIController* OwnerController = Cast<AAIController>(GetOwner())) return OwnerController;
-	if (APawn* OwnerPawn = Cast<APawn>(GetOwner())) return Cast<AAIController>(OwnerPawn->GetController());
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor) return nullptr;
+
+	if (AAIController* OwnerAsController = Cast<AAIController>(OwnerActor))
+	{
+		return OwnerAsController;
+	}
+
+	if (APawn* OwnerAsPawn = Cast<APawn>(OwnerActor))
+	{
+		return Cast<AAIController>(OwnerAsPawn->GetController());
+	}
+
 	return nullptr;
 }
 
+
 ACharacter* UGOAPComponent::GetPlayer()
 {
-	return UGameplayStatics::GetPlayerCharacter(this, 0);
+	if (UWorld* World = GetWorld())
+	{
+		return UGameplayStatics::GetPlayerCharacter(World, 0);
+	}
+	return nullptr;
 }
 
-void UGOAPComponent::SetWorldState(FName Key, int32 Value)
-{
-	CurrentWorldState.SetState(Key, Value);
-}
 
-int32 UGOAPComponent::GetWorldState(FName Key)
-{
-	return CurrentWorldState.GetState(Key, 0);
-}
+void UGOAPComponent::SetWorldState(FName Key, int32 Value) { CurrentWorldState.SetState(Key, Value); }
+int32 UGOAPComponent::GetWorldState(FName Key) { return CurrentWorldState.GetState(Key, 0); }
 
 bool UGOAPComponent::BuildPlan()
 {
-	// [性能优化] 使用 Reset() 替代 Empty()，保留底层内存容量，避免高频规划时的 GC 与内存碎片分配开销
 	CurrentPlan.Reset();
 	CurrentGoal = nullptr;
-
 	UGOAPGoal* BestGoal = nullptr;
 	float MaxPriority = -1.f;
 
-	if (bGlobalDebugEnabled && GEngine) {
-		GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Yellow, FString::Printf(TEXT("🔍 [GOAP 追踪]: 正在评估 %d 个 Goals..."), AvailableGoals.Num()));
-	}
-
 	for (UGOAPGoal* Goal : AvailableGoals)
 	{
-		if (!Goal)
-		{
-			if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, TEXT("❌ 警告: AvailableGoals 中存在空指针(Null)!"));
-			continue;
-		}
-		if (Goal->bDisable) continue;
-
+		if (!Goal || Goal->bDisable) continue;
 		if (!Goal->IsGoalAchieved(this))
 		{
 			bool bAlreadyMet = true;
-			// [规范优化] TPair 代替 auto，消除隐式转换的性能损耗
-			for (const TPair<FName, int32>& DesiredState : Goal->DesiredState)
+			for (const FGOAPCondition& Cond : Goal->GoalConditions)
 			{
-				if (CurrentWorldState.GetState(DesiredState.Key) != DesiredState.Value)
+				if (!Cond.Evaluate(CurrentWorldState.GetState(Cond.Key)))
 				{
 					bAlreadyMet = false;
 					break;
 				}
 			}
-
-			if (bAlreadyMet)
-			{
-				if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Orange, FString::Printf(TEXT("⏭️ 略过: %s 的期望状态已在世界中满足。"), *Goal->GetName()));
-				continue;
-			}
+			if (bAlreadyMet) continue;
 
 			float Prio = Goal->CalculatePriority(this);
-			if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Cyan, FString::Printf(TEXT("📊 评估 Goal: %s | 算得优先级: %f"), *Goal->GetName(), Prio));
-
 			if (Prio > MaxPriority)
 			{
 				MaxPriority = Prio;
 				BestGoal = Goal;
 			}
 		}
-		else
-		{
-			if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Orange, FString::Printf(TEXT("⏭️ 略过: %s 自带的 IsGoalAchieved 返回了 True!"), *Goal->GetName()));
-		}
 	}
 
-	if (!BestGoal)
-	{
-		if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, TEXT("❌ [GOAP 追踪]: 失败！没有找到任何可用的优先级大于 0 的 Goal！"));
-		return false;
-	}
-
+	if (!BestGoal) return false;
 	CurrentGoal = BestGoal;
 
-	if (bGlobalDebugEnabled && GEngine) {
-		GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Green, FString::Printf(TEXT("✅ 选中最佳 Goal: %s | 开始规划路径! (动作池有 %d 个)"), *BestGoal->GetName(), BestGoal->GoalActions.Num()));
-	}
-
 	TArray<TSharedPtr<FGOAPNode>> OpenList;
+	TArray<FGOAPState> ClosedList;
+
 	TSharedPtr<FGOAPNode> StartNode = MakeShared<FGOAPNode>();
 	StartNode->State = CurrentWorldState;
+	StartNode->G = 0;
+	StartNode->H = CalculateHeuristic(StartNode->State, BestGoal->GoalConditions);
 	OpenList.Add(StartNode);
 
 	TSharedPtr<FGOAPNode> GoalNode = nullptr;
-
-	const int32 MaxDepth = 10;
+	const int32 MaxDepth = 15;
 	const int32 MaxIterations = 1000;
 	int32 IterationCount = 0;
 
 	while (OpenList.Num() > 0 && IterationCount < MaxIterations)
 	{
 		IterationCount++;
-
 		int32 BestNodeIndex = 0;
 		for (int32 i = 1; i < OpenList.Num(); ++i)
 		{
-			if (OpenList[i]->Cost < OpenList[BestNodeIndex]->Cost)
+			if (OpenList[i]->F() < OpenList[BestNodeIndex]->F())
 			{
 				BestNodeIndex = i;
 			}
@@ -181,11 +190,12 @@ bool UGOAPComponent::BuildPlan()
 
 		TSharedPtr<FGOAPNode> CurrentNode = OpenList[BestNodeIndex];
 		OpenList.RemoveAt(BestNodeIndex);
+		ClosedList.Add(CurrentNode->State);
 
 		bool bGoalMet = true;
-		for (const TPair<FName, int32>& DesiredState : BestGoal->DesiredState)
+		for (const FGOAPCondition& Cond : BestGoal->GoalConditions)
 		{
-			if (CurrentNode->State.GetState(DesiredState.Key) != DesiredState.Value)
+			if (!Cond.Evaluate(CurrentNode->State.GetState(Cond.Key)))
 			{
 				bGoalMet = false;
 				break;
@@ -200,54 +210,48 @@ bool UGOAPComponent::BuildPlan()
 
 		if (CurrentNode->Depth >= MaxDepth) continue;
 
-		for (UGOAPAction* Action : BestGoal->GoalActions)
+		for (UGOAPAction* Action : AvailableActions)
 		{
-			if (!Action)
-			{
-				if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, TEXT("❌ 警告: Action 池中存在空指针(Null)!"));
-				continue;
-			}
-			if (Action->bDisable) continue;
+			if (!Action || Action->bDisable) continue;
 
 			bool bPreconditionsMet = true;
-			for (const TPair<FName, int32>& Precond : Action->Preconditions)
+			for (const FGOAPCondition& Precond : Action->Preconditions)
 			{
-				if (CurrentNode->State.GetState(Precond.Key) != Precond.Value)
+				if (!Precond.Evaluate(CurrentNode->State.GetState(Precond.Key)))
 				{
 					bPreconditionsMet = false;
 					break;
 				}
 			}
 
-			if (!bPreconditionsMet)
+			if (bPreconditionsMet && !Action->bDisable && !Action->IsOnCooldown())
 			{
-				if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Orange, FString::Printf(TEXT("🚫 拒绝 Action [%s]: 前置条件不满足"), *Action->GetName()));
-			}
-
-			if (bPreconditionsMet)
-			{
-				if (!Action->IsActionAvailable(this))
+				FGOAPState NewState = CurrentNode->State;
+				for (const FGOAPEffect& Effect : Action->Effects)
 				{
-					if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, FString::Printf(TEXT("🚫 拒绝 Action [%s]: IsActionAvailable 返回了 False!"), *Action->GetName()));
+					Effect.Apply(NewState);
 				}
-				else
+
+				bool bInClosedList = false;
+				for (const FGOAPState& VisitedState : ClosedList)
 				{
-					if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Cyan, FString::Printf(TEXT("✅ 采纳 Action [%s] 尝试推进路线!"), *Action->GetName()));
-
-					TSharedPtr<FGOAPNode> NewNode = MakeShared<FGOAPNode>();
-					NewNode->Parent = CurrentNode;
-					NewNode->Action = Action;
-					NewNode->Depth = CurrentNode->Depth + 1;
-					NewNode->Cost = CurrentNode->Cost + Action->CalculateCost(this);
-					NewNode->State = CurrentNode->State;
-
-					for (const TPair<FName, int32>& Effect : Action->Effects)
+					if (AreStatesEqual(VisitedState, NewState))
 					{
-						NewNode->State.SetState(Effect.Key, Effect.Value);
+						bInClosedList = true;
+						break;
 					}
-
-					OpenList.Add(NewNode);
 				}
+				if (bInClosedList) continue;
+
+				TSharedPtr<FGOAPNode> NewNode = MakeShared<FGOAPNode>();
+				NewNode->Parent = CurrentNode;
+				NewNode->Action = Action;
+				NewNode->Depth = CurrentNode->Depth + 1;
+				NewNode->G = CurrentNode->G + Action->CalculateCost(this);
+				NewNode->H = CalculateHeuristic(NewState, BestGoal->GoalConditions);
+				NewNode->State = NewState;
+
+				OpenList.Add(NewNode);
 			}
 		}
 	}
@@ -255,9 +259,6 @@ bool UGOAPComponent::BuildPlan()
 	if (GoalNode != nullptr)
 	{
 		TSharedPtr<FGOAPNode> TraceNode = GoalNode;
-
-		// [性能优化] 废弃极为耗时的 O(N²) Insert(0) 做法
-		// 改为顺序 Add (O(1)) ，并在循环结束后翻转数组 (O(N))，在大规模规划时性能显著提升
 		while (TraceNode != nullptr && TraceNode->Action != nullptr)
 		{
 			CurrentPlan.Add(TraceNode->Action);
@@ -267,13 +268,10 @@ bool UGOAPComponent::BuildPlan()
 		if (CurrentPlan.Num() > 0)
 		{
 			Algo::Reverse(CurrentPlan);
-
-			if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Green, TEXT("🎉 [GOAP 追踪]: 寻路成功！找到了有效计划！"));
 			return true;
 		}
 	}
 
-	if (bGlobalDebugEnabled && GEngine) GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, TEXT("❌ [GOAP 追踪]: 寻路彻底失败！由于没找到连通的 Action，重置 Goal 为 None！"));
 	CurrentGoal = nullptr;
 	return false;
 }
@@ -295,9 +293,9 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 		if (CurrentAction != nullptr)
 		{
 			bool bPreconditionsMet = true;
-			for (const TPair<FName, int32>& Precond : CurrentAction->Preconditions)
+			for (const FGOAPCondition& Precond : CurrentAction->Preconditions)
 			{
-				if (CurrentWorldState.GetState(Precond.Key) != Precond.Value)
+				if (!Precond.Evaluate(CurrentWorldState.GetState(Precond.Key)))
 				{
 					bPreconditionsMet = false;
 					break;
@@ -310,9 +308,6 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 			}
 			else
 			{
-				if (GEngine && bGlobalDebugEnabled && CurrentDebugTarget.Get() == this) {
-					GEngine->AddOnScreenDebugMessage(6677, 3.0f, FColor::Red, TEXT("❌ [GOAP] 计划中止: 下一个 Action 条件已不满足!"));
-				}
 				AbortCurrentPlan();
 				return;
 			}
@@ -321,83 +316,65 @@ void UGOAPComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorC
 
 	if (CurrentAction != nullptr)
 	{
-		// 处理动作打断 (Interrupt) 检查
-		if (CurrentAction->InterruptCost >= 0.0f && CurrentGoal != nullptr)
-		{
-			for (UGOAPAction* CheckAction : CurrentGoal->GoalActions)
-			{
-				if (CheckAction && CheckAction != CurrentAction && !CheckAction->bDisable)
-				{
-					bool bPreconditionsMet = true;
-					for (const TPair<FName, int32>& Precond : CheckAction->Preconditions)
-					{
-						if (CurrentWorldState.GetState(Precond.Key) != Precond.Value)
-						{
-							bPreconditionsMet = false;
-							break;
-						}
-					}
-
-					if (bPreconditionsMet && CheckAction->IsActionAvailable(this))
-					{
-						float DynamicCost = CheckAction->CalculateCost(this);
-
-						if (DynamicCost < CurrentAction->InterruptCost)
-						{
-							if (GEngine && bGlobalDebugEnabled && CurrentDebugTarget.Get() == this) {
-								GEngine->AddOnScreenDebugMessage(6678, 3.0f, FColor::Yellow, FString::Printf(TEXT("⚔️ [%s] 打断触发: [%s] 取代了 [%s]"),
-									*GetOwner()->GetName(), *CheckAction->GetName(), *CurrentAction->GetName()));
-							}
-							AbortCurrentPlan();
-							break; // 触发打断，跳出循环
-						}
-					}
-				}
-			}
-		}
-
-		if (CurrentAction == nullptr) return;
-
 		bool bIsFinished = CurrentAction->OnActionTick(this, DeltaTime);
-
-		if (bIsFinished && CurrentAction != nullptr)
+		if (bIsFinished)
 		{
 			CurrentAction->StartCooldown(this);
-			CurrentAction->OnActionEnd(this);
-
-			for (const TPair<FName, int32>& Effect : CurrentAction->Effects)
+			for (const FGOAPEffect& Effect : CurrentAction->Effects)
 			{
-				SetWorldState(Effect.Key, Effect.Value);
+				Effect.Apply(CurrentWorldState);
 			}
+			CurrentAction->OnActionEnd(this);
 			CurrentAction = nullptr;
 		}
 	}
 
-	// 打印当前调试目标状态
-	if (bGlobalDebugEnabled && CurrentDebugTarget.Get() == this && GEngine)
+	if (bGlobalDebugEnabled && CurrentDebugTarget.Get() == this && GEngine && GetOwner())
 	{
-		FString OwnerName = GetOwner() ? GetOwner()->GetName() : TEXT("Unknown AI");
-		FString GoalStr = CurrentGoal ? CurrentGoal->GetClass()->GetName() : TEXT("None");
-		FString ActionStr = CurrentAction ? CurrentAction->ActionName.ToString() : TEXT("None(Plan Failed/Waiting)");
+		FString DebugMsg = FString::Printf(TEXT("=== GOAP DEBUG [%s] ==="), *GetOwner()->GetName());
 
-		GoalStr = GoalStr.Replace(TEXT("_C"), TEXT(""));
+		FString GoalStr = CurrentGoal ? CurrentGoal->GoalName.ToString() : TEXT("None");
+		DebugMsg += FString::Printf(TEXT("\n[Current Goal]: %s"), *GoalStr);
 
-		FString DebugStr = FString::Printf(TEXT("🤖 [GOAP Target]: %s\n🎯 [Current Goal]: %s\n🎬 [Current Action]: %s"),
-			*OwnerName, *GoalStr, *ActionStr);
+		FString ActionStr = CurrentAction ? CurrentAction->ActionName.ToString() : TEXT("None");
+		DebugMsg += FString::Printf(TEXT("\n[Current Action]: %s"), *ActionStr);
 
-		GEngine->AddOnScreenDebugMessage((uint64)GetUniqueID(), 0.0f, FColor::Cyan, DebugStr, true, FVector2D(1.5f, 1.5f));
+		FString PlanStr = TEXT("");
+		for (UGOAPAction* PlanAction : CurrentPlan)
+		{
+			if (PlanAction)
+			{
+				PlanStr += PlanAction->ActionName.ToString() + TEXT(" -> ");
+			}
+		}
+		DebugMsg += FString::Printf(TEXT("\n[Plan Queue]: %s"), PlanStr.IsEmpty() ? TEXT("Empty") : *PlanStr);
+
+		DebugMsg += TEXT("\n[World States]:");
+		if (CurrentWorldState.States.Num() == 0)
+		{
+			DebugMsg += TEXT(" Empty");
+		}
+		else
+		{
+			for (const TPair<FName, int32>& Pair : CurrentWorldState.States)
+			{
+				DebugMsg += FString::Printf(TEXT("\n - %s : %d"), *Pair.Key.ToString(), Pair.Value);
+			}
+		}
+
+		GEngine->AddOnScreenDebugMessage((uint64)GetOwner()->GetUniqueID(), 0.0f, FColor::Cyan, DebugMsg);
 	}
 }
 
+
 void UGOAPComponent::AbortCurrentPlan()
 {
-	if (CurrentAction)
+	if (CurrentAction != nullptr)
 	{
-		CurrentAction->StartCooldown(this);
-		CurrentAction->OnActionEnd(this); // 确保被打断时令牌能安全释放
+		CurrentAction->OnActionEnd(this);
 		CurrentAction = nullptr;
 	}
-	CurrentPlan.Reset();
+	CurrentPlan.Empty();
 	CurrentGoal = nullptr;
 }
 
@@ -410,8 +387,7 @@ void UGOAPComponent::ToggleGOAPDebug(const UObject* WorldContextObject)
 	bGlobalDebugEnabled = !bGlobalDebugEnabled;
 	if (GEngine)
 	{
-		FString Msg = bGlobalDebugEnabled ? TEXT("GOAP Debug: ON") : TEXT("GOAP Debug: OFF");
-		GEngine->AddOnScreenDebugMessage(8888, 3.0f, bGlobalDebugEnabled ? FColor::Green : FColor::Red, Msg);
+		GEngine->AddOnScreenDebugMessage(-1, 3.f, bGlobalDebugEnabled ? FColor::Green : FColor::Red, FString::Printf(TEXT("GOAP Debug: %s"), bGlobalDebugEnabled ? TEXT("ON") : TEXT("OFF")));
 	}
 }
 
@@ -421,62 +397,123 @@ void UGOAPComponent::SwitchGOAPDebugTarget(const UObject* WorldContextObject)
 	if (GFrameCounter == LastSwitchFrame) return;
 	LastSwitchFrame = GFrameCounter;
 
-	if (!WorldContextObject || !WorldContextObject->GetWorld()) return;
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (!World) return;
 
 	bool bFoundCurrent = false;
-	UGOAPComponent* FirstComp = nullptr;
-	UGOAPComponent* NextComp = nullptr;
+	UGOAPComponent* FirstComponent = nullptr;
+	UGOAPComponent* NextComponent = nullptr;
 
 	for (TObjectIterator<UGOAPComponent> It; It; ++It)
 	{
-		if (It->GetWorld() != WorldContextObject->GetWorld()) continue;
-		if (!FirstComp) FirstComp = *It;
-
+		if (It->GetWorld() != World) continue;
+		if (!FirstComponent) FirstComponent = *It;
 		if (bFoundCurrent)
 		{
-			NextComp = *It;
+			NextComponent = *It;
 			break;
 		}
-		if (CurrentDebugTarget.Get() == *It)
+		if (*It == CurrentDebugTarget.Get())
 		{
 			bFoundCurrent = true;
 		}
 	}
-
-	CurrentDebugTarget = NextComp ? NextComp : FirstComp;
-
-	if (GEngine && CurrentDebugTarget.IsValid())
-	{
-		FString TargetName = CurrentDebugTarget->GetOwner() ? CurrentDebugTarget->GetOwner()->GetName() : TEXT("Unknown AI");
-		GEngine->AddOnScreenDebugMessage(8889, 3.0f, FColor::Yellow, FString::Printf(TEXT("🔄 [GOAP] 已切换观察目标: %s"), *TargetName));
-	}
+	CurrentDebugTarget = NextComponent ? NextComponent : FirstComponent;
 }
 
-void UGOAPComponent::DebugPrintWorldState(bool bPrintToScreen, FName KeyToPrint)
+void UGOAPComponent::DebugPrintWorldState(bool bPrintToScreen, FName SpecificKey)
 {
-	if (KeyToPrint.IsNone())
-	{
-		int32 PrintIndex = 0;
-		for (const TPair<FName, int32>& StatePair : CurrentWorldState.States)
-		{
-			FString Msg = FString::Printf(TEXT("[%s]: %d"), *StatePair.Key.ToString(), StatePair.Value);
+	if (!GEngine || !GetOwner()) return;
 
-			if (bPrintToScreen && GEngine)
-			{
-				uint64 MsgKey = (uint64)GetUniqueID() + 1000 + PrintIndex;
-				GEngine->AddOnScreenDebugMessage(MsgKey, 2.0f, FColor::Cyan, Msg);
-			}
-			PrintIndex++;
-		}
+	FString Msg = FString::Printf(TEXT("[%s] World States:"), *GetOwner()->GetName());
+	if (SpecificKey != NAME_None)
+	{
+		Msg += FString::Printf(TEXT("\n%s = %d"), *SpecificKey.ToString(), CurrentWorldState.GetState(SpecificKey));
 	}
 	else
 	{
-		int32 Val = GetWorldState(KeyToPrint);
-		FString Msg = FString::Printf(TEXT("[%s]: %d"), *KeyToPrint.ToString(), Val);
-		if (bPrintToScreen && GEngine)
+		for (const TPair<FName, int32>& Pair : CurrentWorldState.States)
 		{
-			uint64 MsgKey = (uint64)GetUniqueID() + 2000 + GetTypeHash(KeyToPrint);
-			GEngine->AddOnScreenDebugMessage(MsgKey, 2.0f, FColor::Cyan, Msg);
+			Msg += FString::Printf(TEXT("\n%s = %d"), *Pair.Key.ToString(), Pair.Value);
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("%s"), *Msg);
+	if (bPrintToScreen)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Yellow, Msg);
+	}
+}
+
+void UGOAPComponent::CheckForInterruption()
+{
+	if (!CurrentGoal || !CurrentAction) return;
+
+	if (!CurrentAction->bInterruptable) return;
+
+	UGOAPGoal* BestNewGoal = nullptr;
+	float MaxPriority = -1.f;
+
+	bool bShouldDebug = bGlobalDebugEnabled && (CurrentDebugTarget.Get() == this) && GEngine && GetOwner();
+
+	FString DebugStr;
+	if (bShouldDebug)
+	{
+		DebugStr = FString::Printf(TEXT("[GOAP 打断检测雷达 - %s]\n当前正在执行: %s (优先级: %.1f)"),
+			*GetOwner()->GetName(),
+			*CurrentGoal->GoalName.ToString(), CurrentGoal->CalculatePriority(this));
+	}
+
+	for (UGOAPGoal* Goal : AvailableGoals)
+	{
+		if (!Goal || Goal->bDisable) continue;
+
+		if (!Goal->IsGoalAchieved(this))
+		{
+			bool bAlreadyMet = true;
+			for (const FGOAPCondition& Cond : Goal->GoalConditions)
+			{
+				if (!Cond.Evaluate(CurrentWorldState.GetState(Cond.Key)))
+				{
+					bAlreadyMet = false;
+					break;
+				}
+			}
+			if (bAlreadyMet) continue;
+
+			float Prio = Goal->CalculatePriority(this);
+
+			if (bShouldDebug)
+			{
+				DebugStr += FString::Printf(TEXT("\n竞选目标 -> %s : %.1f"), *Goal->GoalName.ToString(), Prio);
+			}
+
+			if (Prio > MaxPriority)
+			{
+				MaxPriority = Prio;
+				BestNewGoal = Goal;
+			}
+		}
+	}
+
+	if (bShouldDebug)
+	{
+		uint64 DebugKey = (uint64)GetOwner()->GetUniqueID() + 1000;
+		GEngine->AddOnScreenDebugMessage(DebugKey, 0.0f, FColor::Orange, DebugStr);
+	}
+
+	if (BestNewGoal && BestNewGoal != CurrentGoal)
+	{
+		float CurrentPriority = CurrentGoal->CalculatePriority(this);
+		float NewPriority = MaxPriority;
+
+		if (NewPriority > (CurrentPriority + CurrentAction->InterruptCost))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GOAP Interrupted! Stopping [%s] to pursue [%s]"),
+				*CurrentAction->ActionName.ToString(),
+				*BestNewGoal->GoalName.ToString());
+
+			AbortCurrentPlan();
 		}
 	}
 }
